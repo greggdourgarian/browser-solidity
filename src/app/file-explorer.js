@@ -33,6 +33,17 @@ var css = csjs`
 module.exports = fileExplorer
 
 function fileExplorer (appAPI, files) {
+  this.files = files
+
+  this.files.event.register('fileExternallyChanged', (path, content) => {
+    if (appAPI.currentFile() === path && appAPI.currentContent() !== content) {
+      if (!confirm('This file has been changed outside of the editor. Do you want to keep the current content ?')) {
+        appAPI.setText(content)
+      }
+    }
+  })
+
+  var self = this
   var fileEvents = files.event
   var treeView = new Treeview({
     extractData: function (value, tree, key) {
@@ -66,14 +77,20 @@ function fileExplorer (appAPI, files) {
     }
   })
 
+  this.treeView = treeView
+
   var deleteButton = yo`
     <span class=${css.remove} onclick=${deletePath}>
       <i class="fa fa-trash" aria-hidden="true"></i>
     </span>
   `
 
-  appAPI.event.register('currentFileChanged', (newFile) => {
-    fileFocus(newFile)
+  appAPI.event.register('currentFileChanged', (newFile, explorer) => {
+    if (explorer === files) {
+      fileFocus(newFile)
+    } else {
+      unfocus(focusElement)
+    }
   })
   fileEvents.register('fileRemoved', fileRemoved)
   fileEvents.register('fileRenamed', fileRenamed)
@@ -83,13 +100,11 @@ function fileExplorer (appAPI, files) {
   var focusElement = null
   var textUnderEdit = null
 
-  var element = treeView.render(files.listAsTree())
-  element.className = css.fileexplorer
-
   var events = new EventManager()
+  this.events = events
   var api = {}
   api.addFile = function addFile (file) {
-    var name = file.name
+    var name = files.type + '/' + file.name
     if (!files.exists(name) || confirm('The file ' + name + ' already exists! Would you like to overwrite it?')) {
       var fileReader = new FileReader()
       fileReader.onload = function (event) {
@@ -100,18 +115,24 @@ function fileExplorer (appAPI, files) {
       fileReader.readAsText(file)
     }
   }
+  this.api = api
 
   function focus (event) {
     event.cancelBubble = true
     var li = this
     if (focusElement === li) return
-    if (focusElement) focusElement.classList.toggle(css.hasFocus)
+    unfocus(focusElement)
     focusElement = li
     focusElement.classList.toggle(css.hasFocus)
     var label = getLabelFrom(li)
     var filepath = label.dataset.path
     var isFile = label.className.indexOf('file') === 0
     if (isFile) events.trigger('focus', [filepath])
+  }
+
+  function unfocus (el) {
+    if (focusElement) focusElement.classList.toggle(css.hasFocus)
+    focusElement = null
   }
 
   function hover (event) {
@@ -128,7 +149,7 @@ function fileExplorer (appAPI, files) {
   }
 
   function getElement (path) {
-    var label = element.querySelector(`label[data-path="${path}"]`)
+    var label = self.element.querySelector(`label[data-path="${path}"]`)
     if (label) return getLiFrom(label)
   }
 
@@ -164,8 +185,13 @@ function fileExplorer (appAPI, files) {
       var save = textUnderEdit !== label.innerText
       if (event.which === 13) event.preventDefault()
       if (save && event.which !== 13) save = confirm('Do you want to rename?')
-      if (save) renameSubtree(label)
-      else label.innerText = textUnderEdit
+      if (save) {
+        var newPath = label.dataset.path
+        newPath = newPath.split('/')
+        newPath[newPath.length - 1] = label.innerText
+        newPath = newPath.join('/')
+        files.rename(label.dataset.path, newPath)
+      } else label.innerText = textUnderEdit
       label.removeAttribute('contenteditable')
       label.classList.remove(css.rename)
     }
@@ -205,8 +231,6 @@ function fileExplorer (appAPI, files) {
       var path = label.dataset.path
       var newName = path.replace(oldPath, newPath)
       label.dataset.path = newName
-      var isFile = label.className.indexOf('file') === 0
-      if (isFile) files.rename(path, newName)
       var ul = li.lastChild
       if (ul.tagName === 'UL') {
         updateAllLabels([...ul.children], oldPath, newPath)
@@ -247,13 +271,9 @@ function fileExplorer (appAPI, files) {
   function fileAdded (filepath) {
     var el = treeView.render(files.listAsTree())
     el.className = css.fileexplorer
-    element.parentElement.replaceChild(el, element)
-    element = el
+    self.element.parentElement.replaceChild(el, self.element)
+    self.element = el
   }
-
-  element.events = events
-  element.api = api
-  return element
 }
 /******************************************************************************
   HELPER FUNCTIONS
@@ -311,4 +331,13 @@ function expandPathTo (li) {
     var caret = li.firstChild.firstChild
     if (caret.classList.contains('fa-caret-right')) caret.click() // expand
   }
+}
+
+fileExplorer.prototype.init = function () {
+  var element = this.treeView.render(this.files.listAsTree())
+  element.className = css.fileexplorer
+  element.events = this.events
+  element.api = this.api
+  this.element = element
+  return element
 }
